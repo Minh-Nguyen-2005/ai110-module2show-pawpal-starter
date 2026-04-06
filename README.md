@@ -1,26 +1,59 @@
-# PawPal+ (Module 2 Project)
+# PawPal+ — Smart Pet Care Planner
 
-You are building **PawPal+**, a Streamlit app that helps a pet owner plan care tasks for their pet.
+PawPal+ is a Streamlit app that helps busy pet owners stay consistent with daily care. Enter your pets, define their tasks, and let the scheduler build an optimised plan that fits your available time — with plain-English reasoning for every decision.
 
-## Scenario
+---
 
-A busy pet owner needs help staying consistent with pet care. They want an assistant that can:
+## 📸 Demo
 
-- Track pet care tasks (walks, feeding, meds, enrichment, grooming, etc.)
-- Consider constraints (time available, priority, owner preferences)
-- Produce a daily plan and explain why it chose that plan
+<a href="ai110-module2show-pawpal-starter/pawpal_screenshot.png" target="_blank">
+  <img src='ai110-module2show-pawpal-starter/pawpal_screenshot.png' title='PawPal+ App' width='' alt='PawPal App' class='center-block' />
+</a>
 
-Your job is to design the system first (UML), then implement the logic in Python, then connect it to the Streamlit UI.
+---
 
-## What you will build
+## Features
 
-Your final app should:
+### Owner and pet management
+- Register an owner with a daily time budget (in minutes)
+- Add any number of pets with name, species, age, and care notes
+- All data persists across page interactions using `st.session_state`
 
-- Let a user enter basic owner + pet info
-- Let a user add/edit tasks (duration + priority at minimum)
-- Generate a daily schedule/plan based on constraints and priorities
-- Display the plan clearly (and ideally explain the reasoning)
-- Include tests for the most important scheduling behaviors
+### Task management
+- Add tasks to individual pets: **walk**, **feeding**, **medication**, **grooming**, or **enrichment**
+- Set duration, priority (`high` / `medium` / `low`), and an optional fixed start time (`HH:MM`)
+- Mark tasks as `once`, `daily`, or `weekly` — recurring tasks auto-schedule the next instance on completion
+
+### Sorting by time
+Tasks with a fixed start time are sorted using `datetime.time` comparison, not raw strings. Raw string sort incorrectly places `"9:00"` after `"10:00"` (because `'9' > '1'` character-by-character). The datetime-based sort gives correct clock order every time.
+
+### Priority-based scheduling
+Flexible tasks (no fixed time) are ordered by priority score (`high=3`, `medium=2`, `low=1`). Within the same priority tier, shorter tasks are scheduled first — a greedy strategy that maximises the number of tasks that fit inside a tight time budget.
+
+### Conflict detection
+Before building the schedule, the planner checks every pair of fixed-time tasks for overlapping windows using the interval test:
+
+```
+start_a < end_b  AND  start_b < end_a
+```
+
+Detected conflicts are shown as amber warnings directly above the schedule. The plan is still generated so the owner can decide how to resolve the clash — adjacent tasks (`end_a == start_b`) are correctly not flagged.
+
+### Recurring tasks
+Completing a `daily` task automatically creates the next instance due tomorrow (`due_date + timedelta(days=1)`). A `weekly` task schedules the next instance in 7 days. `once` tasks are never duplicated. Future-dated instances are hidden from today's plan until their due date arrives.
+
+### Filter by pet or status
+`Owner.get_all_tasks(pet_name=..., completed=...)` slices the task list across all pets. Both filters are optional and composable — e.g. all pending tasks for one pet, or all completed tasks across every pet.
+
+### Transparent reasoning
+Every scheduling decision is logged in plain English:
+```
+SCHEDULED  Mochi: Breakfast (10min, high, fixed @ 07:30) — 80min remaining.
+SKIPPED    Mochi: Nail trim (20min needed, only 10min left).
+```
+The full log is available in the "Why did the scheduler choose this plan?" expander in the UI.
+
+---
 
 ## Getting started
 
@@ -28,25 +61,21 @@ Your final app should:
 
 ```bash
 python -m venv .venv
-source .venv/bin/activate  # Windows: .venv\Scripts\activate
+source .venv/bin/activate   # Windows: .venv\Scripts\activate
 pip install -r requirements.txt
 ```
 
-## Smarter Scheduling
+### Run the app
 
-PawPal+ goes beyond a simple sorted list. Four algorithms make the daily plan more accurate and useful:
+```bash
+streamlit run app.py
+```
 
-**Sort by time**
-Fixed-time tasks (e.g. medication at `08:00`) are sorted using `datetime.time` comparison, not raw strings. String sort puts `"9:00"` after `"10:00"` because `"9" > "1"` lexicographically — the datetime-based sort gives the correct clock order every time.
+### Run the CLI demo
 
-**Filter by pet or status**
-`Owner.get_all_tasks(pet_name=..., completed=...)` lets you slice the task list any way you need: all of one pet's tasks, all pending tasks across every pet, or completed tasks for a specific pet. Both parameters are optional and composable.
-
-**Recurring tasks**
-Tasks carry a `frequency` field (`"once"` / `"daily"` / `"weekly"`). Calling `Pet.complete_task()` marks the task done and automatically appends the next instance with its due date advanced by `timedelta(days=1)` or `timedelta(weeks=1)`. One-off tasks are never duplicated.
-
-**Conflict detection**
-Before building the schedule, `Scheduler._detect_conflicts()` checks every pair of fixed-time tasks for overlapping windows using the interval test `start_a < end_b AND start_b < end_a`. Conflicts are returned as plain-English warning strings — the schedule is still generated so the owner can decide how to resolve them.
+```bash
+python main.py
+```
 
 ---
 
@@ -68,33 +97,46 @@ python -m pytest -v
 
 The suite lives in `tests/test_pawpal.py` and contains **34 tests** across six classes:
 
-| Class | Tests | Behavior verified |
+| Class | Tests | Behaviour verified |
 |---|---|---|
 | `TestTask` | 3 | `mark_complete()` flips status; `priority_score()` returns correct integers |
 | `TestPet` | 4 | Tasks added, removed, and filtered correctly by completion status |
 | `TestScheduler` | 5 | Priority ordering, fixed-time ordering, budget enforcement, empty-owner edge case |
 | `TestSortByTime` | 4 | Clock-order sort including the `"9:00"` vs `"10:00"` string-sort regression guard |
-| `TestRecurringTasks` | 8 | Daily/weekly recurrence creates correct next due dates; `"once"` tasks never duplicated; future-dated tasks hidden from today's plan |
-| `TestConflictDetection` | 6 | Exact-time and partial-overlap conflicts flagged; adjacent tasks (end == start) correctly not flagged; plan still generated when conflicts exist |
+| `TestRecurringTasks` | 8 | Daily/weekly recurrence creates correct next due dates; `once` tasks never duplicated; future-dated tasks hidden from today's plan |
+| `TestConflictDetection` | 6 | Exact-time and partial-overlap conflicts flagged; adjacent tasks not flagged; plan still generated when conflicts exist |
 | `TestFiltering` | 4 | `get_all_tasks()` filters by pet name, completion status, both combined, and no filter |
 
 ### Confidence level
 
 ★★★★☆ (4 / 5)
 
-The core scheduling contracts, all four Phase 4 algorithms, and the most important edge cases are covered. The one star short of five reflects two gaps that would be addressed in the next iteration:
+Core scheduling contracts, all four Phase 4 algorithms, and the most important edge cases are covered. The one star short of five reflects two open gaps:
 
-- **No integration test** for the full Owner → Pet → Task → Scheduler → UI pipeline end-to-end.
-- **`fixed_time` format is not validated.** A task created with `fixed_time="8am"` instead of `"08:00"` would crash `sort_by_time()` at runtime. A test that asserts a clean error message for bad input would close this gap.
+- No integration test for the full Owner → Pet → Task → Scheduler → UI pipeline end-to-end.
+- `fixed_time` format validation exists in the UI but has no dedicated unit test; a malformed value would crash `sort_by_time()`.
 
 ---
 
-### Suggested workflow
+## Project structure
 
-1. Read the scenario carefully and identify requirements and edge cases.
-2. Draft a UML diagram (classes, attributes, methods, relationships).
-3. Convert UML into Python class stubs (no logic yet).
-4. Implement scheduling logic in small increments.
-5. Add tests to verify key behaviors.
-6. Connect your logic to the Streamlit UI in `app.py`.
-7. Refine UML so it matches what you actually built.
+```
+pawpal_system.py   — backend logic (Owner, Pet, Task, Scheduler)
+app.py             — Streamlit UI
+main.py            — CLI demo script
+tests/
+  test_pawpal.py   — 34-test automated suite
+uml_final.png      — final class diagram
+uml_final.mmd      — Mermaid source for the diagram
+reflection.md      — design decisions and project reflection
+```
+
+---
+
+## Smarter scheduling — algorithm notes
+
+**Greedy vs optimal scheduling**
+The scheduler uses a greedy first-fit algorithm (O(n)), not an optimal knapsack solver (O(n × W)). This is a deliberate tradeoff: greedy output is transparent and easy to explain to the user. An optimal algorithm might deprioritise a high-priority medication task because three grooming tasks together score higher in aggregate — the wrong outcome for this domain.
+
+**Conflict detection complexity**
+`_detect_conflicts()` checks every unique pair of fixed-time tasks using `itertools.combinations` — O(n²) where n is the number of fixed-time tasks. For a typical day with fewer than 10 fixed tasks, this is at most 45 comparisons and runs in under 1ms. An O(n log n) sweep-line algorithm would be faster at scale but would add complexity without any practical benefit here.

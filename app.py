@@ -1,3 +1,6 @@
+import re
+from datetime import date
+
 import streamlit as st
 from pawpal_system import Owner, Pet, Task, Scheduler
 
@@ -110,26 +113,36 @@ else:
                 "Task type", ["walk", "feeding", "medication", "grooming", "enrichment"]
             )
         task_name = st.text_input("Task name", value="Morning walk")
-        col3, col4, col5 = st.columns(3)
+        col3, col4, col5, col6 = st.columns(4)
         with col3:
             duration = st.number_input("Duration (min)", min_value=1, max_value=240, value=20)
         with col4:
             priority = st.selectbox("Priority", ["high", "medium", "low"])
         with col5:
             fixed_time = st.text_input("Fixed time (HH:MM)", placeholder="optional, e.g. 08:00")
+        with col6:
+            frequency = st.selectbox("Repeats", ["once", "daily", "weekly"])
         add_task = st.form_submit_button("Add task")
 
     if add_task:
-        pet_obj = next(p for p in owner.get_pets() if p.name == target_pet)
-        pet_obj.add_task(Task(
-            name=task_name,
-            task_type=task_type,
-            duration=int(duration),
-            priority=priority,
-            fixed_time=fixed_time.strip() or None,
-        ))
-        st.session_state.scheduler = None
-        st.success(f"Task '{task_name}' added to {target_pet}!")
+        raw_time = fixed_time.strip()
+        # Validate HH:MM format before constructing the Task — bad format crashes sort_by_time
+        if raw_time and not re.match(r"^\d{1,2}:\d{2}$", raw_time):
+            st.error(f"Fixed time must be HH:MM (e.g. 08:00), got '{raw_time}'.")
+        else:
+            pet_obj = next(p for p in owner.get_pets() if p.name == target_pet)
+            pet_obj.add_task(Task(
+                name=task_name,
+                task_type=task_type,
+                duration=int(duration),
+                priority=priority,
+                fixed_time=raw_time or None,
+                frequency=frequency,
+                due_date=date.today(),
+            ))
+            st.session_state.scheduler = None
+            recur_label = f" — repeats {frequency}" if frequency != "once" else ""
+            st.success(f"Task '{task_name}' added to {target_pet}{recur_label}!")
 
     # Show all tasks currently loaded on every pet
     for pet in owner.get_pets():
@@ -138,11 +151,13 @@ else:
             with st.expander(f"{pet.name}'s tasks ({len(tasks)})", expanded=True):
                 st.table([
                     {
-                        "Task": t.name,
-                        "Type": t.task_type,
-                        "Min": t.duration,
-                        "Priority": t.priority,
+                        "Task":       t.name,
+                        "Type":       t.task_type,
+                        "Min":        t.duration,
+                        "Priority":   t.priority,
                         "Fixed time": t.fixed_time or "—",
+                        "Repeats":    t.frequency,
+                        "Status":     "done" if t.is_completed else "pending",
                     }
                     for t in tasks
                 ])
@@ -180,7 +195,24 @@ if st.session_state.scheduler:
     s = st.session_state.scheduler
     time_used = sum(t.duration for t in s.scheduled_tasks)
 
-    # ── Summary header ──────────────────────────────────────────────────────
+    # ── Conflict warnings — shown first so the owner sees them immediately ───
+    # Answer to "how should conflict warnings be presented?":
+    # st.warning (amber banner) is the right component — it's attention-grabbing
+    # but not as alarming as st.error. Each warning names both tasks and their
+    # times so the owner knows exactly what to reschedule, without needing to
+    # hunt through the full plan table.
+    if s.conflicts:
+        st.markdown("#### ⚠️ Scheduling Conflicts Detected")
+        st.caption(
+            "These tasks overlap in time. Your schedule was still generated below, "
+            "but you may not be able to complete both. Consider adjusting the fixed times."
+        )
+        for conflict in s.conflicts:
+            # Strip the "CONFLICT  " prefix for a cleaner UI message
+            readable = conflict.replace("CONFLICT  ", "")
+            st.warning(readable)
+
+    # ── Summary metrics ──────────────────────────────────────────────────────
     col_a, col_b, col_c = st.columns(3)
     col_a.metric("Tasks scheduled", len(s.scheduled_tasks))
     col_b.metric("Time used (min)", time_used)
@@ -188,22 +220,24 @@ if st.session_state.scheduler:
 
     # ── Scheduled tasks table ────────────────────────────────────────────────
     if s.scheduled_tasks:
-        st.markdown("#### Scheduled")
+        st.markdown("#### Today's Plan")
         st.table([
             {
-                "Pet":       t.pet_name,
-                "Task":      t.name,
-                "Type":      t.task_type,
-                "Min":       t.duration,
-                "Priority":  t.priority,
-                "Time":      t.fixed_time or "flexible",
+                "Pet":      t.pet_name,
+                "Task":     t.name,
+                "Type":     t.task_type,
+                "Min":      t.duration,
+                "Priority": t.priority,
+                "Time":     t.fixed_time or "flexible",
+                "Repeats":  t.frequency,
             }
             for t in s.scheduled_tasks
         ])
 
     # ── Skipped tasks ────────────────────────────────────────────────────────
     if s.skipped_tasks:
-        st.markdown("#### Skipped (not enough time)")
+        st.markdown("#### Skipped — not enough time today")
+        st.caption("These tasks didn't fit in your time budget. Consider increasing your budget or removing lower-priority tasks.")
         st.table([
             {
                 "Pet":      t.pet_name,
@@ -218,3 +252,44 @@ if st.session_state.scheduler:
     with st.expander("Why did the scheduler choose this plan?"):
         for line in s.explain():
             st.text(line)
+
+# ---------------------------------------------------------------------------
+# Section 5 — Mark a task complete
+# ---------------------------------------------------------------------------
+
+st.divider()
+st.subheader("5. Mark a Task Complete")
+st.caption("Completing a recurring task automatically schedules the next occurrence.")
+
+if not owner.get_pets():
+    st.info("Add a pet first.")
+else:
+    all_pending = owner.get_all_tasks(completed=False)
+    if not all_pending:
+        st.success("All tasks are already complete for today!")
+    else:
+        with st.form("complete_form"):
+            pet_choice = st.selectbox(
+                "Pet",
+                [p.name for p in owner.get_pets() if p.get_pending_tasks()],
+            )
+            pet_for_complete = next(
+                (p for p in owner.get_pets() if p.name == pet_choice), None
+            )
+            task_choices = (
+                [t.name for t in pet_for_complete.get_pending_tasks()]
+                if pet_for_complete else []
+            )
+            task_choice = st.selectbox("Task to mark complete", task_choices)
+            mark_done = st.form_submit_button("Mark complete")
+
+        if mark_done and pet_for_complete:
+            next_task = pet_for_complete.complete_task(task_choice, today=date.today())
+            st.session_state.scheduler = None   # plan is stale
+            if next_task:
+                st.success(
+                    f"'{task_choice}' marked done! "
+                    f"Next occurrence scheduled for **{next_task.due_date}** ({next_task.frequency})."
+                )
+            else:
+                st.success(f"'{task_choice}' marked done!")

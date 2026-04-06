@@ -95,7 +95,8 @@ classDiagram
         +list~Pet~ pets
         +add_pet(pet) None
         +remove_pet(pet_name) None
-        +get_pets() list
+        +get_pets() list~Pet~
+        +get_all_tasks(pet_name, completed) list~Task~
     }
 
     class Pet {
@@ -106,8 +107,9 @@ classDiagram
         +list~Task~ tasks
         +add_task(task) None
         +remove_task(task_name) None
-        +get_tasks() list
-        +get_pending_tasks() list
+        +get_tasks() list~Task~
+        +get_pending_tasks(today) list~Task~
+        +complete_task(task_name, today) Task
     }
 
     class Task {
@@ -118,7 +120,12 @@ classDiagram
         +str fixed_time
         +bool is_completed
         +str notes
+        +str pet_name
+        +str frequency
+        +date due_date
         +mark_complete() None
+        +is_due_today(today) bool
+        +next_occurrence(today) Task
         +priority_score() int
         +__str__() str
     }
@@ -129,12 +136,15 @@ classDiagram
         +list~Task~ scheduled_tasks
         +list~Task~ skipped_tasks
         +list~str~ reasoning_log
-        +generate_plan() list
-        -_collect_all_tasks() list
-        -_sort_tasks(tasks) list
+        +list~str~ conflicts
+        +generate_plan() list~Task~
+        +sort_by_time(tasks) list~Task~
+        -_detect_conflicts(tasks) list~str~
+        -_collect_all_tasks() list~Task~
+        -_sort_tasks(tasks) list~Task~
         -_fit_within_budget(tasks) None
         +get_summary() str
-        +explain() list
+        +explain() list~str~
     }
 
     Owner "1" *-- "0..*" Pet : owns
@@ -142,11 +152,12 @@ classDiagram
     Scheduler "1" o-- "1" Owner : schedules for
 ```
 
-**Relationship review:**
-- `Owner *-- Pet` (composition): pets only exist in the context of an owner — if the owner is removed, so are their pets.
-- `Pet *-- Task` (composition): tasks belong to a specific pet and don't exist independently.
-- `Scheduler o-- Owner` (aggregation): the scheduler uses an owner to read pets and tasks, but doesn't own or destroy the owner.
-- No unnecessary complexity: `Task` has no sub-types yet (medication vs. walk behave the same in the algorithm — differentiated only by `task_type` string and `fixed_time`). A subclass would only be warranted if behavior diverges.
+**Relationship review (final):**
+- `Owner *-- Pet` (composition): unchanged — pets belong to one owner and don't exist independently.
+- `Pet *-- Task` (composition): unchanged — tasks belong to one pet.
+- `Scheduler o-- Owner` (aggregation): unchanged — the scheduler reads from the owner without owning it.
+- `Task` gained three new fields (`pet_name`, `frequency`, `due_date`) and two new methods (`is_due_today`, `next_occurrence`) — still no sub-types needed because behaviour varies only by field values, not method logic.
+- `Scheduler` gained one new public method (`sort_by_time`), one new private method (`_detect_conflicts`), and one new attribute (`conflicts`) — the algorithm's surface area grew but the relationships between classes did not change.
 
 ---
 
@@ -201,13 +212,25 @@ This tradeoff is reasonable for a daily pet care schedule because:
 
 **a. How you used AI**
 
-- How did you use AI tools during this project (for example: design brainstorming, debugging, refactoring)?
-- What kinds of prompts or questions were most helpful?
+Claude was used as a collaborative engineering partner across every phase of the project, but the role it played shifted depending on the task:
+
+- **Phase 1 (Design):** Used for brainstorming the class structure — specifically asking "what information does each object need to hold, and what actions should it perform?" Claude's suggestions were treated as a starting point, not a final answer. The four-class design (`Task`, `Pet`, `Owner`, `Scheduler`) emerged from back-and-forth refinement rather than a single prompt.
+- **Phase 2–3 (Implementation):** Used to fill in method bodies once the skeleton was agreed upon. The most effective prompts were specific: *"implement `_fit_within_budget` using a greedy approach with a local `remaining` counter — do NOT mutate `self.time_budget`"* rather than vague ones like *"implement the scheduler."* Specificity forced Claude to respect constraints that came from my own design decisions, not its defaults.
+- **Phase 4 (Algorithms):** Used to identify which parts of the codebase were too manual or fragile. Asking *"review these methods for readability and performance — tell me which ones could be simplified without sacrificing clarity"* produced a useful prioritised list. The `range(len(...))` → `itertools.combinations` refactor in `_detect_conflicts` and the nested list comprehension in `get_all_tasks` came directly from this review.
+- **Phase 5 (Testing):** Used to generate test stubs for Phase 4 behaviours (sort-by-time, recurring tasks, conflict detection). The most useful prompt pattern was: *"write tests for X — include one happy-path test and one edge case that would catch a silent regression."* The `test_single_digit_hour_sorts_before_double_digit` test is a direct product of this — it would immediately catch any regression back to raw string sort.
+
+The most consistently effective prompt pattern across all phases was framing questions as architecture constraints rather than open-ended requests: *"given that X must not happen, implement Y"* rather than *"implement Y."*
 
 **b. Judgment and verification**
 
-- Describe one moment where you did not accept an AI suggestion as-is.
-- How did you evaluate or verify what the AI suggested?
+The clearest moment of not accepting a suggestion as-is was during the `_detect_conflicts` method. Claude's first draft used a `range(len(timed))` double-loop with index arithmetic. The code was functionally correct, but I replaced it with `itertools.combinations(timed, 2)` because:
+
+1. The `combinations` version makes the intent explicit — "check every unique pair" — without the reader needing to mentally parse the index bounds.
+2. It eliminated three lines of noise (`for i in range(len(timed))`, `for j in range(i+1, len(timed))`, plus two index lookups) that obscured the actual overlap condition.
+
+The verification step was running the conflict detection demo in `main.py` before and after the change, confirming that the same two conflicts were flagged with identical warning messages. Passing the full test suite (`python -m pytest`) gave additional confidence that the refactor introduced no regressions.
+
+A second moment was rejecting Claude's initial suggestion to make `Scheduler` a subclass of `Owner` (on the grounds that "a Scheduler is a specialised Owner"). That relationship is wrong: a Scheduler *uses* an Owner; it is not a kind of Owner. Inheritance would have made it impossible to reuse a Scheduler across different owners, and would have violated the single-responsibility principle. The aggregation relationship (`Scheduler o-- Owner`) was the correct design and was kept throughout.
 
 ---
 
@@ -215,13 +238,27 @@ This tradeoff is reasonable for a daily pet care schedule because:
 
 **a. What you tested**
 
-- What behaviors did you test?
-- Why were these tests important?
+The 34-test suite covers five distinct categories of behaviour:
+
+1. **Core data integrity** (`TestTask`, `TestPet`): `mark_complete()` flips the right flag, `priority_score()` returns the correct integers, `add_task()` and `remove_task()` keep the task list consistent, and `get_pending_tasks()` filters correctly by completion status. These tests matter because the entire scheduler depends on these methods — a silent bug here would corrupt every plan silently.
+
+2. **Scheduling contracts** (`TestScheduler`): High-priority tasks appear before low-priority ones, fixed-time tasks appear before flexible ones, tasks exceeding the budget land in `skipped_tasks`, and an owner with no pets produces an empty plan. These tests encode the core promise of the system — if any of them fail, the scheduler is no longer doing what it claims.
+
+3. **Sorting correctness** (`TestSortByTime`): The critical test here is `test_single_digit_hour_sorts_before_double_digit` — it would catch a regression back to raw string sort, where `"9:00"` incorrectly sorts after `"10:00"`. Without this test, such a regression could go unnoticed until a user reports medication being scheduled hours late.
+
+4. **Recurring task logic** (`TestRecurringTasks`): Eight tests covering daily/weekly/once recurrence, the `timedelta` date arithmetic, and the critical edge case that a task due tomorrow must not appear in today's pending list. This last test is the safety net that makes the entire recurring-task feature safe to ship.
+
+5. **Conflict detection** (`TestConflictDetection`): The adjacent-tasks test (`end_a == start_b` → no conflict) is particularly important. The overlap condition `start_a < end_b AND start_b < end_a` uses strict inequality deliberately — a non-strict version would incorrectly flag valid back-to-back scheduling as a conflict.
 
 **b. Confidence**
 
-- How confident are you that your scheduler works correctly?
-- What edge cases would you test next if you had more time?
+★★★★☆ — confident the core logic is correct; two gaps remain open.
+
+The scheduler's main contracts are all tested against pinned inputs (fixed dates, fixed budgets, fixed task sets), so the tests don't depend on the real clock or real randomness. This makes the suite reproducible and trustworthy.
+
+The two edge cases worth testing next:
+- **Input validation for `fixed_time`**: a value like `"8am"` would crash `sort_by_time()` with an unhelpful `ValueError`. A test asserting a descriptive error message would close this gap and prevent confusing runtime crashes in the UI.
+- **End-to-end integration**: no test currently runs the full pipeline (Owner → Pet → Task → Scheduler → `generate_plan()`) with recurring tasks active across two simulated days. A multi-step test that completes a daily task on Day 1 and verifies the next instance appears in Day 2's plan would close the most significant untested integration path.
 
 ---
 
@@ -229,12 +266,20 @@ This tradeoff is reasonable for a daily pet care schedule because:
 
 **a. What went well**
 
-- What part of this project are you most satisfied with?
+The part of the project I am most satisfied with is the `Scheduler` class's design — specifically the decision to keep `_fit_within_budget` as a plain greedy loop with a local `remaining` counter and a human-readable reasoning log. It would have been easy to make the scheduler more "clever" (optimal knapsack, constraint-satisfaction, etc.), but a complex algorithm would have made the output harder to explain to a non-technical user. The reasoning log — *"SCHEDULED Morning walk (30min, high) — 45min remaining"* — is something an owner can actually read and trust. That transparency was the right call for this domain.
+
+The test for the string-sort regression (`"9:00"` vs `"10:00"`) is also satisfying — it is a test that would fail on a naive implementation and pass only on the correct one. Tests like this have real value as regression guards, not just coverage metrics.
 
 **b. What you would improve**
 
-- If you had another iteration, what would you improve or redesign?
+In a next iteration, I would redesign how `fixed_time` is stored. Currently it is a raw string (`"08:00"`), which means parsing and validation are scattered across `sort_by_time` and the Streamlit form. A better design would store it as `datetime.time` on the `Task` object directly, with validation at construction time. This would eliminate the `split(":")` parsing in `sort_by_time`, make `_detect_conflicts` cleaner (no anchor-date conversion needed), and surface format errors at the moment a bad value is entered rather than at scheduling time.
+
+I would also add a `reset_day()` method to `Pet` that clears `is_completed` on all `"once"` tasks and moves recurring tasks forward — this would make the multi-day workflow complete without requiring manual task management between days.
 
 **c. Key takeaway**
 
-- What is one important thing you learned about designing systems or working with AI on this project?
+The most important thing I learned is that **AI makes you a faster architect, but only if you arrive as an architect first.** When prompts were vague ("implement the scheduler"), the output required significant rework. When prompts encoded a specific design constraint ("use a local `remaining` counter — do not mutate `self.time_budget`"), the output was immediately usable.
+
+The moments where AI saved the most time were not the moments of writing code — they were moments of *reviewing* code: asking "what is fragile about this?" or "which version is more readable?" Those prompts turned Claude into a code reviewer rather than a code generator, which produced more durable improvements. The `range(len)` → `combinations` refactor and the `get_all_tasks` list comprehension both came from this kind of review prompt, not from a generation prompt.
+
+The lead architect's job in an AI-assisted project is to hold the design invariants — the decisions about *why* the code is structured the way it is — while delegating the expression of those decisions to the AI. That division of labour is what made it possible to build a four-class scheduling system with 34 tests across six phases without losing track of the original design intent.

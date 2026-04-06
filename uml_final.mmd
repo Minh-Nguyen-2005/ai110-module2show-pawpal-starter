@@ -1,0 +1,62 @@
+classDiagram
+    class Owner {
+        +str name
+        +int daily_time_budget
+        +list~Pet~ pets
+        +add_pet(pet) None
+        +remove_pet(pet_name) None
+        +get_pets() list~Pet~
+        +get_all_tasks(pet_name, completed) list~Task~
+    }
+
+    class Pet {
+        +str name
+        +str species
+        +int age
+        +str notes
+        +list~Task~ tasks
+        +add_task(task) None
+        +remove_task(task_name) None
+        +get_tasks() list~Task~
+        +get_pending_tasks(today) list~Task~
+        +complete_task(task_name, today) Task
+    }
+
+    class Task {
+        +str name
+        +str task_type
+        +int duration
+        +str priority
+        +str fixed_time
+        +bool is_completed
+        +str notes
+        +str pet_name
+        +str frequency
+        +date due_date
+        +mark_complete() None
+        +is_due_today(today) bool
+        +next_occurrence(today) Task
+        +priority_score() int
+        +__str__() str
+    }
+
+    class Scheduler {
+        +Owner owner
+        +int time_budget
+        +list~Task~ scheduled_tasks
+        +list~Task~ skipped_tasks
+        +list~str~ reasoning_log
+        +list~str~ conflicts
+        +generate_plan() list~Task~
+        +sort_by_time(tasks) list~Task~
+        -_detect_conflicts(tasks) list~str~
+        -_collect_all_tasks() list~Task~
+        -_sort_tasks(tasks) list~Task~
+        -_fit_within_budget(tasks) None
+        +get_summary() str
+        +explain() list~str~
+    }
+
+    Owner "1" *-- "0..*" Pet : owns
+    Pet "1" *-- "0..*" Task : has
+    Scheduler "1" o-- "1" Owner : schedules for

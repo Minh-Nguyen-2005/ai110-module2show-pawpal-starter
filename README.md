@@ -50,6 +50,45 @@ Before building the schedule, `Scheduler._detect_conflicts()` checks every pair 
 
 ---
 
+## Testing PawPal+
+
+### Run the tests
+
+```bash
+python -m pytest
+```
+
+To see each test name as it runs:
+
+```bash
+python -m pytest -v
+```
+
+### What the tests cover
+
+The suite lives in `tests/test_pawpal.py` and contains **34 tests** across six classes:
+
+| Class | Tests | Behavior verified |
+|---|---|---|
+| `TestTask` | 3 | `mark_complete()` flips status; `priority_score()` returns correct integers |
+| `TestPet` | 4 | Tasks added, removed, and filtered correctly by completion status |
+| `TestScheduler` | 5 | Priority ordering, fixed-time ordering, budget enforcement, empty-owner edge case |
+| `TestSortByTime` | 4 | Clock-order sort including the `"9:00"` vs `"10:00"` string-sort regression guard |
+| `TestRecurringTasks` | 8 | Daily/weekly recurrence creates correct next due dates; `"once"` tasks never duplicated; future-dated tasks hidden from today's plan |
+| `TestConflictDetection` | 6 | Exact-time and partial-overlap conflicts flagged; adjacent tasks (end == start) correctly not flagged; plan still generated when conflicts exist |
+| `TestFiltering` | 4 | `get_all_tasks()` filters by pet name, completion status, both combined, and no filter |
+
+### Confidence level
+
+★★★★☆ (4 / 5)
+
+The core scheduling contracts, all four Phase 4 algorithms, and the most important edge cases are covered. The one star short of five reflects two gaps that would be addressed in the next iteration:
+
+- **No integration test** for the full Owner → Pet → Task → Scheduler → UI pipeline end-to-end.
+- **`fixed_time` format is not validated.** A task created with `fixed_time="8am"` instead of `"08:00"` would crash `sort_by_time()` at runtime. A test that asserts a clean error message for bad input would close this gap.
+
+---
+
 ### Suggested workflow
 
 1. Read the scenario carefully and identify requirements and edge cases.

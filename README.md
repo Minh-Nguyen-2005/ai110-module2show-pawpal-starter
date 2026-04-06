@@ -6,8 +6,8 @@ PawPal+ is a Streamlit app that helps busy pet owners stay consistent with daily
 
 ## 📸 Demo
 
-<a href="ai110-module2show-pawpal-starter/pawpal_screenshot.png" target="_blank">
-  <img src='ai110-module2show-pawpal-starter/pawpal_screenshot.png' title='PawPal+ App' width='' alt='PawPal App' class='center-block' />
+<a href="pawpal_screenshot.png" target="_blank">
+  <img src='pawpal_screenshot.png' title='PawPal+ App' width='' alt='PawPal App' class='center-block' />
 </a>
 
 ---

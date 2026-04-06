@@ -11,6 +11,8 @@ Classes (in dependency order):
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from datetime import date, datetime as dt_datetime, time as dt_time, timedelta
+from itertools import combinations
 
 
 # ---------------------------------------------------------------------------
@@ -29,10 +31,43 @@ class Task:
     is_completed: bool = False
     notes: str = ""
     pet_name: str = ""      # set by Scheduler._collect_all_tasks; used in summaries
+    frequency: str = "once" # recurrence cadence: "once" | "daily" | "weekly"
+    due_date: date | None = None    # date this instance is due; None means always due today
 
     def mark_complete(self) -> None:
         """Mark this task as done for today."""
         self.is_completed = True
+
+    def is_due_today(self, today: date | None = None) -> bool:
+        """Return True if this task is pending and due on or before today."""
+        today = today or date.today()
+        if self.is_completed:
+            return False
+        # due_date=None means the task has no scheduled date — treat as always due
+        return self.due_date is None or self.due_date <= today
+
+    def next_occurrence(self, today: date | None = None) -> Task | None:
+        """Return a new Task due on the next recurrence date (daily +1d, weekly +7d), or None for 'once' tasks."""
+        if self.frequency == "once":
+            return None
+        today = today or date.today()
+        base = self.due_date or today
+        if self.frequency == "daily":
+            next_date = base + timedelta(days=1)
+        elif self.frequency == "weekly":
+            next_date = base + timedelta(weeks=1)
+        else:
+            return None
+        return Task(
+            name=self.name,
+            task_type=self.task_type,
+            duration=self.duration,
+            priority=self.priority,
+            fixed_time=self.fixed_time,
+            notes=self.notes,
+            frequency=self.frequency,
+            due_date=next_date,
+        )
 
     def priority_score(self) -> int:
         """Return a sortable integer: high=3, medium=2, low=1."""
@@ -74,9 +109,20 @@ class Pet:
         """Return all tasks for this pet."""
         return self.tasks
 
-    def get_pending_tasks(self) -> list[Task]:
-        """Return only tasks that have not been completed today."""
-        return [t for t in self.tasks if not t.is_completed]
+    def get_pending_tasks(self, today: date | None = None) -> list[Task]:
+        """Return tasks that are pending and due on or before today."""
+        return [t for t in self.tasks if t.is_due_today(today)]
+
+    def complete_task(self, task_name: str, today: date | None = None) -> Task | None:
+        """Mark a pending task complete and auto-append its next recurrence to the task list; returns the new Task or None."""
+        for task in self.tasks:
+            if task.name == task_name and not task.is_completed:
+                task.mark_complete()
+                next_task = task.next_occurrence(today)
+                if next_task:
+                    self.tasks.append(next_task)
+                return next_task
+        return None
 
 
 # ---------------------------------------------------------------------------
@@ -103,6 +149,20 @@ class Owner:
     def get_pets(self) -> list[Pet]:
         """Return all pets belonging to this owner."""
         return self.pets
+
+    def get_all_tasks(
+        self,
+        pet_name: str | None = None,
+        completed: bool | None = None,
+    ) -> list[Task]:
+        """Return tasks across all pets, optionally filtered by pet name and/or completion status."""
+        return [
+            task
+            for pet in self.pets
+            if pet_name is None or pet.name == pet_name
+            for task in pet.tasks
+            if completed is None or task.is_completed == completed
+        ]
 
     def __repr__(self) -> str:
         """Return an unambiguous string representation useful for debugging."""
@@ -136,6 +196,7 @@ class Scheduler:
         self.scheduled_tasks: list[Task] = []
         self.skipped_tasks: list[Task] = []
         self.reasoning_log: list[str] = []
+        self.conflicts: list[str] = []
 
     def generate_plan(self) -> list[Task]:
         """Reset state, run the full scheduling pipeline, and return the ordered task list."""
@@ -143,12 +204,40 @@ class Scheduler:
         self.scheduled_tasks = []
         self.skipped_tasks = []
         self.reasoning_log = []
+        self.conflicts = []
 
         all_tasks = self._collect_all_tasks()
+        self.conflicts = self._detect_conflicts(all_tasks)   # warn; never crash
         sorted_tasks = self._sort_tasks(all_tasks)
         self._fit_within_budget(sorted_tasks)
 
         return self.scheduled_tasks
+
+    def _detect_conflicts(self, tasks: list[Task]) -> list[str]:
+        """Return a warning string for every pair of fixed-time tasks whose windows overlap; never raises."""
+        warnings = []
+        fixed = [t for t in tasks if t.fixed_time is not None]
+
+        # Convert each fixed-time task to a (start, end) datetime pair
+        # using an arbitrary anchor date — only the time component matters.
+        ANCHOR = dt_datetime(2000, 1, 1)
+        timed: list[tuple[Task, dt_datetime, dt_datetime]] = []
+        for task in fixed:
+            h, m = task.fixed_time.split(":")
+            start = ANCHOR.replace(hour=int(h), minute=int(m))
+            end   = start + timedelta(minutes=task.duration)
+            timed.append((task, start, end))
+
+        # combinations(timed, 2) yields every unique pair without index arithmetic
+        for (task_a, start_a, end_a), (task_b, start_b, end_b) in combinations(timed, 2):
+            if start_a < end_b and start_b < end_a:
+                label_a = f"{task_a.pet_name}: {task_a.name}" if task_a.pet_name else task_a.name
+                label_b = f"{task_b.pet_name}: {task_b.name}" if task_b.pet_name else task_b.name
+                warnings.append(
+                    f"CONFLICT  '{label_a}' ({task_a.fixed_time}, {task_a.duration}min) "
+                    f"overlaps '{label_b}' ({task_b.fixed_time}, {task_b.duration}min)"
+                )
+        return warnings
 
     def _collect_all_tasks(self) -> list[Task]:
         """Gather pending tasks from every pet and stamp each with its pet's name."""
@@ -159,12 +248,22 @@ class Scheduler:
                 tasks.append(task)
         return tasks
 
+    def sort_by_time(self, tasks: list[Task]) -> list[Task]:
+        """Sort tasks earliest fixed-time first (using datetime.time, not strings); flexible tasks placed last."""
+        def _key(task: Task):
+            if task.fixed_time:
+                h, m = task.fixed_time.split(":")
+                # (0, ...) groups fixed-time tasks before flexible ones
+                return (0, dt_time(int(h), int(m)))
+            # (1, ...) pushes flexible tasks to the end; secondary value is
+            # a placeholder so the tuple types stay consistent
+            return (1, dt_time(0, 0))
+
+        return sorted(tasks, key=_key)
+
     def _sort_tasks(self, tasks: list[Task]) -> list[Task]:
-        """Order tasks: fixed-time first by time, then flexible by priority (desc) and duration (asc)."""
-        fixed    = sorted(
-            [t for t in tasks if t.fixed_time is not None],
-            key=lambda t: t.fixed_time,
-        )
+        """Order tasks: fixed-time first (via sort_by_time), then flexible by priority (desc) and duration (asc)."""
+        fixed    = self.sort_by_time([t for t in tasks if t.fixed_time is not None])
         flexible = sorted(
             [t for t in tasks if t.fixed_time is None],
             key=lambda t: (-t.priority_score(), t.duration),

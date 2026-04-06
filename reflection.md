@@ -174,13 +174,26 @@ The original design listed `time_budget` as a single attribute serving two roles
 
 **a. Constraints and priorities**
 
-- What constraints does your scheduler consider (for example: time, priority, preferences)?
-- How did you decide which constraints mattered most?
+The scheduler considers three constraints, in this order of precedence:
+
+1. **Fixed time** — tasks with a `fixed_time` (e.g. medication at `"08:00"`) are always scheduled first, sorted by clock time. A missed medication is not the same as a missed play session; hard times must be respected regardless of priority level.
+2. **Priority** — among flexible tasks, `high` tasks are scheduled before `medium`, which come before `low`. This is expressed numerically via `priority_score()` (high=3, medium=2, low=1) so the sort key is a single integer comparison.
+3. **Duration (tie-breaking)** — within the same priority tier, shorter tasks are scheduled first. This maximises the number of tasks that fit inside a tight time budget (greedy by count, not by duration).
+
+The daily time budget is the hard outer constraint — tasks that don't fit are moved to `skipped_tasks`, not dropped silently.
 
 **b. Tradeoffs**
 
-- Describe one tradeoff your scheduler makes.
-- Why is that tradeoff reasonable for this scenario?
+**Tradeoff: greedy first-fit scheduling instead of optimal knapsack**
+
+The scheduler uses a greedy algorithm: it walks the sorted task list in order and adds each task if it fits in the remaining budget. This is fast (O(n)) and its reasoning is transparent — the log says exactly why each task was scheduled or skipped.
+
+The optimal alternative would be a 0/1 knapsack dynamic-programming algorithm, which considers all possible subsets of tasks and finds the combination that maximises total priority value within the time budget. For example, if the budget is 30 minutes and the remaining tasks are one 20min high-priority task and two 15min medium-priority tasks, the greedy approach picks the 20min task (highest priority) and has no room for the 15min tasks, leaving 10 minutes unused. The knapsack approach would pick the two 15min tasks instead, fitting perfectly and potentially delivering more combined value depending on how priority is weighted.
+
+This tradeoff is reasonable for a daily pet care schedule because:
+- The task list is short (typically fewer than 15 items), so O(n²) knapsack overhead would be invisible, but the greedy output is easier to explain to the user.
+- Pet care has a natural priority ordering (medication > feeding > walking > grooming) that the greedy approach already respects. An optimal algorithm might deprioritise a medication task because three grooming tasks together score higher in aggregate — which is the wrong outcome for this domain.
+- Transparent reasoning matters: the owner can read "SKIPPED: Nail trim (20min needed, only 10min left)" and understand the decision. An optimal algorithm's reasoning is harder to summarise in plain language.
 
 ---
 
